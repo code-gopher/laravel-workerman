@@ -41,13 +41,14 @@ final class TaskManager
                 }
 
                 $this->tasks[] = $task;
+                Logger::info("已加载定时任务: {$class}");
             } catch (Throwable $e) {
                 Logger::error("加载定时任务失败 [{$class}]: {$e->getMessage()}");
             }
         }
 
-        if (count($tasks) > 0) {
-            Logger::info('已加载 ' . count($tasks) . ' 个定时任务');
+        if (count($this->tasks) > 0) {
+            Logger::info('已加载 ' . count($this->tasks) . ' 个定时任务');
         }
     }
 
