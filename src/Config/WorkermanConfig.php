@@ -48,6 +48,9 @@ final class WorkermanConfig
     /** @var array<string> 自定义清理器类名列表 */
     private $cleaners = [];
 
+    /** @var array<string> 定时任务类名列表 */
+    private $tasks = [];
+
     /**
      * 配置构造函数
      *
@@ -90,6 +93,9 @@ final class WorkermanConfig
 
         // 自定义清理器配置
         $this->cleaners = $config['cleaners'] ?? [];
+
+        // 定时任务配置
+        $this->tasks = $config['tasks'] ?? [];
 
         return $this;
     }
@@ -298,4 +304,15 @@ final class WorkermanConfig
     {
         return $this->cleaners;
     }
+
+    /**
+     * 获取定时任务列表。
+     *
+     * @return array<string>
+     */
+    public function getTasks(): array
+    {
+        return $this->tasks;
+    }
+
 }

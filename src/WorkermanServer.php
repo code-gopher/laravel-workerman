@@ -6,6 +6,7 @@ namespace CodeGopher\LaravelWorkerman;
 
 use Throwable;
 use Workerman\Worker;
+use Workerman\Timer;
 use Workerman\Protocols\Http\Request;
 use Workerman\Protocols\Http\Response;
 use Workerman\Connection\TcpConnection;
@@ -146,6 +147,12 @@ final class WorkermanServer
             $startTime = microtime(true);
 
             $this->appManager->initialize();
+
+            if ($worker->id === 0 && count($this->config->getTasks()) > 0) {
+                $taskManager = new TaskManager();
+                $taskManager->loadTasks($this->config->getTasks());
+                $taskManager->register();
+            }
 
             $initTime   = round((microtime(true) - $startTime) * 1000, 2);
             $memoryUsed = round(memory_get_usage(true) / 1024 / 1024, 2);
@@ -298,6 +305,8 @@ final class WorkermanServer
      */
     private function onWorkerStop(Worker $worker): void
     {
+        Timer::delAll();
+
         // 清理静态文件处理器缓存
         StaticFileHandler::clearCache();
 

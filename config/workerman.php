@@ -44,4 +44,11 @@ return [
     'cleaners'     => [
         // App\Workerman\Cleaners\MyCleaner::class,
     ],
+
+    // 定时任务（由单独的单进程 Worker 执行，避免多 HTTP Worker 重复运行）
+    // 实现 CodeGopher\LaravelWorkerman\Contracts\TaskInterface 接口
+    'tasks'        => [
+        // App\Workerman\Tasks\SyncStatisticsTask::class,
+    ],
+
 ];

@@ -146,6 +146,11 @@ return [
         // App\Workerman\Cleaners\MyCleaner::class,
         // App\Workerman\Cleaners\AnotherCleaner::class,
     ],
+
+    // 定时任务（仅由 HTTP Worker #0 注册）
+    'tasks'        => [
+        // App\Workerman\Tasks\SyncStatisticsTask::class,
+    ],
 ];
 ```
 
@@ -205,6 +210,39 @@ class MyCleaner implements CleanerInterface
 ],
 ```
 
+## 定时任务
+
+定时任务在 HTTP Worker #0 启动时注册，因此不会因 HTTP Worker 配置为多个进程而重复运行。任务类需要实现 `TaskInterface`：
+
+```php
+<?php
+
+namespace App\Workerman\Tasks;
+
+use CodeGopher\LaravelWorkerman\Contracts\TaskInterface;
+
+class SyncStatisticsTask implements TaskInterface
+{
+    public function getInterval(): float
+    {
+        return 60;
+    }
+
+    public function handle(): void
+    {
+        StatisticsService::sync();
+    }
+}
+```
+
+在 `config/workerman.php` 注册：
+
+```php
+'tasks' => [
+    App\Workerman\Tasks\SyncStatisticsTask::class,
+],
+```
+
 ## 环境变量
 
 ```ini
@@ -225,7 +263,8 @@ src/
 │   └── WorkermanConfig.php    # 配置管理器 - 多级配置覆盖
 ├── Contracts/
 │   ├── FrameworkAdapter.php   # 框架适配器接口
-│   └── CleanerInterface.php   # 清理器接口
+│   ├── CleanerInterface.php   # 清理器接口
+│   └── TaskInterface.php      # 定时任务接口
 ├── Adapters/
 │   ├── AdapterFactory.php     # 适配器工厂 - 自动检测框架类型
 │   ├── LaravelAdapter.php     # Laravel 适配器
@@ -241,6 +280,7 @@ src/
 │   ├── UrlGeneratorCleaner.php
 │   └── DatabaseCleaner.php
 ├── CleanerManager.php         # 清理器管理器
+├── TaskManager.php            # 定时任务管理器
 ├── WorkermanServer.php        # 服务器类 - Worker 生命周期管理
 ├── AppManager.php             # 应用管理器 - 统一处理 Laravel/Lumen
 ├── StaticFileHandler.php      # 静态文件处理器
