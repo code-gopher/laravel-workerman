@@ -54,3 +54,23 @@ Route::get('/acceptance/session', static function (\Illuminate\Http\Request $req
         'notice' => $session->get('notice'),
     ], JSON_THROW_ON_ERROR), 200, ['Content-Type' => 'application/json']);
 });
+
+/**
+ * 返回真实 multipart 上传文件的元数据，验证 Workerman 到 Laravel 的文件转换。
+ *
+ * @param \Illuminate\Http\Request $request 当前上传请求
+ * @return Response
+ */
+Route::post('/acceptance/upload', static function (\Illuminate\Http\Request $request): Response {
+    $file = $request->file('file');
+    if ($file === null || !$file->isValid()) {
+        return new Response(json_encode(['error' => 'upload missing or invalid']), 422, ['Content-Type' => 'application/json']);
+    }
+
+    return new Response(json_encode([
+        'name' => $file->getClientOriginalName(),
+        'size' => $file->getSize(),
+        'sha256' => hash_file('sha256', $file->getRealPath()),
+        'valid' => $file->isValid(),
+    ], JSON_THROW_ON_ERROR), 200, ['Content-Type' => 'application/json']);
+});
