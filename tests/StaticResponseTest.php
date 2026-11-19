@@ -67,3 +67,16 @@ final class StaticResponseTest extends TestCase
         self::assertInstanceOf(HeadResponse::class, $response);
         self::assertSame(200, $response->getStatusCode());
     }
+
+    /**
+     * 创建指定方法和 URI 的 Workerman HTTP 请求。
+     *
+     * @param string $method HTTP 方法
+     * @param string $uri 请求 URI
+     * @return Request
+     */
+    private function createRequest(string $method, string $uri): Request
+    {
+        return new Request($method . ' ' . $uri . " HTTP/1.1\r\nHost: localhost\r\n\r\n");
+    }
+}
