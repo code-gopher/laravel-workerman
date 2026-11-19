@@ -116,21 +116,38 @@ final class WorkermanConfigTest extends TestCase
      */
     public function testGlobalCleanerRemovesRequestSpecificServerAndCookieData(): void
     {
-        $_GET = ['secret' => 'one'];
-        $_POST = ['payload' => 'one'];
-        $_REQUEST = ['payload' => 'one'];
-        $_FILES = ['upload' => 'one'];
-        $_COOKIE = ['session' => 'one'];
-        $_SERVER = ['HTTP_AUTHORIZATION' => 'Bearer one', 'argv' => ['worker.php']];
+        $originalGet = $_GET;
+        $originalPost = $_POST;
+        $originalRequest = $_REQUEST;
+        $originalFiles = $_FILES;
+        $originalCookie = $_COOKIE;
+        $originalServer = $_SERVER;
 
-        (new GlobalVariableCleaner())->clean(new \stdClass());
+        try {
+            $_GET = ['secret' => 'one'];
+            $_POST = ['payload' => 'one'];
+            $_REQUEST = ['payload' => 'one'];
+            $_FILES = ['upload' => 'one'];
+            $_COOKIE = ['session' => 'one'];
+            $_SERVER = ['HTTP_AUTHORIZATION' => 'Bearer one', 'argv' => ['worker.php']];
 
-        self::assertSame([], $_GET);
-        self::assertSame([], $_POST);
-        self::assertSame([], $_REQUEST);
-        self::assertSame([], $_FILES);
-        self::assertSame([], $_COOKIE);
-        self::assertSame(['argv' => ['worker.php']], $_SERVER);
+            (new GlobalVariableCleaner())->clean(new \stdClass());
+
+            self::assertSame([], $_GET);
+            self::assertSame([], $_POST);
+            self::assertSame([], $_REQUEST);
+            self::assertSame([], $_FILES);
+            self::assertSame([], $_COOKIE);
+            self::assertSame(['argv' => ['worker.php']], $_SERVER);
+        } finally {
+            // 清理器会改写 PHPUnit 计时器读取的服务器变量，测试后需恢复进程原状态。
+            $_GET = $originalGet;
+            $_POST = $originalPost;
+            $_REQUEST = $originalRequest;
+            $_FILES = $originalFiles;
+            $_COOKIE = $originalCookie;
+            $_SERVER = $originalServer;
+        }
     }
 
     /**
@@ -149,9 +166,8 @@ final class WorkermanConfigTest extends TestCase
         $response = new \Symfony\Component\HttpFoundation\Response('response-body');
 
         $workermanResponse = $converter->invoke($manager, $response, $request);
-        $headers = (new \ReflectionClass($workermanResponse))->getProperty('headers');
-
-        self::assertSame('13', $headers->getValue($workermanResponse)['Content-Length']);
+        $response = new \CodeGopher\LaravelWorkerman\HeadResponse(200, $workermanResponse->getHeaders());
+        self::assertStringContainsString("Content-Length: 13\r\n", (string) $response);
     }
 
     /**
@@ -232,9 +248,8 @@ final class WorkermanConfigTest extends TestCase
             $response = new \Symfony\Component\HttpFoundation\BinaryFileResponse($filePath);
             $response->headers->set('Content-Length', '16');
             $workermanResponse = $converter->invoke($manager, $response, $request);
-            $headers = (new \ReflectionClass($workermanResponse))->getProperty('headers');
-
-            self::assertSame(['16'], $headers->getValue($workermanResponse)['Content-Length']);
+            $headResponse = new \CodeGopher\LaravelWorkerman\HeadResponse(200, $workermanResponse->getHeaders());
+            self::assertStringContainsString("Content-Length: 16\r\n", (string) $headResponse);
             self::assertNull($workermanResponse->file);
         } finally {
             unlink($filePath);
