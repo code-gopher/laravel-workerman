@@ -12,7 +12,13 @@ if (!in_array($framework, ['laravel', 'lumen'], true)) {
 }
 $basePath = dirname(__DIR__) . '/' . $framework . '-fixture';
 require $framework === 'lumen' ? $basePath . '/vendor/autoload.php' : dirname(__DIR__, 2) . '/vendor/autoload.php';
-$config = (new WorkermanConfig($basePath))->load();
+$cliOptions = [];
+$acceptancePort = getenv('ACCEPTANCE_PORT');
+if (is_string($acceptancePort) && $acceptancePort !== '') {
+    // 验收栈需与常驻开发服务隔离端口，命令行优先级用于覆盖 fixture 默认配置。
+    $cliOptions['port'] = $acceptancePort;
+}
+$config = (new WorkermanConfig($basePath))->load($cliOptions);
 if (getenv('ACCEPTANCE_TASK') === '1') {
     require __DIR__ . '/TickTask.php';
     $tasks = new ReflectionProperty($config, 'tasks');

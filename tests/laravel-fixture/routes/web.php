@@ -33,3 +33,24 @@ Route::get('/echo', static function (\Illuminate\Http\Request $request): Respons
         'token' => $request->header('X-Test-Token'),
     ], JSON_UNESCAPED_SLASHES));
 });
+
+/**
+ * 通过独立客户端 Cookie 验证 Laravel 文件会话与一次性 flash 生命周期。
+ *
+ * @param \Illuminate\Http\Request $request 当前会话请求
+ * @return Response
+ */
+Route::get('/acceptance/session', static function (\Illuminate\Http\Request $request): Response {
+    $session = $request->session();
+    if ($request->query->has('value')) {
+        $session->put('value', $request->query('value'));
+    }
+    if ($request->query->has('flash')) {
+        $session->flash('notice', $request->query('flash'));
+    }
+
+    return new Response(json_encode([
+        'value' => $session->get('value'),
+        'notice' => $session->get('notice'),
+    ], JSON_THROW_ON_ERROR), 200, ['Content-Type' => 'application/json']);
+});

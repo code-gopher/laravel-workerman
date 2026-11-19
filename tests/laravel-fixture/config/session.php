@@ -7,7 +7,7 @@ return [
     'lifetime' => 120,
     'expire_on_close' => false,
     'encrypt' => false,
-    'files' => __DIR__ . '/../storage/framework/sessions',
+    'files' => getenv('ACCEPTANCE_SESSION_PATH') ?: __DIR__ . '/../storage/framework/sessions',
     'connection' => null,
     'table' => 'sessions',
     'store' => null,
