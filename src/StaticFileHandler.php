@@ -67,6 +67,11 @@ class StaticFileHandler
         $uri = $request->uri();
         $path = parse_url($uri, PHP_URL_PATH);
 
+        // 非法端口等 URI 会解析为 false，必须在 pathinfo 前回退以免异常退出 Worker。
+        if ($path === false) {
+            return null;
+        }
+
         // 跳过根路径和 PHP 入口文件
         if ($path === null || $path === '/' || $path === '/index.php') {
             return null;
@@ -87,6 +92,18 @@ class StaticFileHandler
         // 检查文件是否存在且可读
         if (!is_file($filePath) || !is_readable($filePath)) {
             return null;
+        }
+
+        // HEAD 保留 GET 实体长度，使用专用序列化器避免重复长度头及文件正文。
+        if (strtoupper($request->method()) === 'HEAD') {
+            $response = new HeadResponse(200);
+            $response->withHeader('Content-Type', self::MIME_TYPES[$ext]);
+            $response->withHeader('Content-Length', (string) filesize($filePath));
+            $response->withHeader('Last-Modified', gmdate('D, d M Y H:i:s', filemtime($filePath)) . ' GMT');
+            $response->withHeader('Cache-Control', 'public, max-age=86400');
+            $response->withHeader('X-Content-Type-Options', 'nosniff');
+
+            return $response;
         }
 
         $response = new Response(200);
@@ -137,14 +154,50 @@ class StaticFileHandler
             return null;
         }
 
-        // 关键安全检查：确保解析后的路径在静态目录内
-        // 使用 strpos 检查路径前缀，防止目录遍历
-        if (strpos($realPath, self::$normalizedStaticDir) !== 0) {
+        // 关键安全检查：真实路径必须位于静态目录边界内，避免同名前缀目录逃逸。
+        if (!self::isPathWithinDirectory($realPath, self::$normalizedStaticDir)) {
             Logger::warning("目录遍历攻击尝试被阻止: {$path}");
             return null;
         }
 
         return $realPath;
+    }
+
+    /**
+     * 判断规范化后的文件路径是否位于指定目录内。
+     *
+     * @param string $filePath 解析后的文件路径
+     * @param string $directory 解析后的静态根目录
+     *
+     * @return bool
+     */
+    private static function isPathWithinDirectory(string $filePath, string $directory): bool
+    {
+        $separator = DIRECTORY_SEPARATOR;
+        $normalizedDirectory = str_replace(['/', '\\'], $separator, $directory);
+        $normalizedDirectory = rtrim($normalizedDirectory, '/\\');
+        $normalizedFilePath = str_replace(['/', '\\'], $separator, $filePath);
+
+        // Windows 盘符根目录去除分隔符后会剩下盘符冒号，需补回根分隔符。
+        if (PHP_OS_FAMILY === 'Windows' && preg_match('/^[A-Za-z]:$/', $normalizedDirectory)) {
+            $normalizedDirectory .= $separator;
+        }
+
+        // 根目录本身没有可再追加的分隔符，需保留其平台根路径语义。
+        if ($normalizedDirectory === '') {
+            $directoryPrefix = $separator;
+        } else {
+            $directoryPrefix = rtrim($normalizedDirectory, '/\\') . $separator;
+        }
+
+        $comparisonFilePath = $normalizedFilePath;
+        $comparisonPrefix = $directoryPrefix;
+        if (PHP_OS_FAMILY === 'Windows') {
+            $comparisonFilePath = strtolower($comparisonFilePath);
+            $comparisonPrefix = strtolower($comparisonPrefix);
+        }
+
+        return strpos($comparisonFilePath, $comparisonPrefix) === 0;
     }
 
     /**

@@ -19,7 +19,7 @@ return [
     // Worker 进程数（Windows 只能为 1）
     'workers'      => env('WORKERMAN_WORKERS', 4),
 
-    // 最大请求数（达到后 Worker 自动重启，防止内存泄漏）
+    // 最大请求数（达到后当前 Worker 子进程在最后一个响应发送后退出，由进程管理器补充）
     'max_requests' => env('WORKERMAN_MAX_REQUESTS', 10000),
 
     // 调试模式

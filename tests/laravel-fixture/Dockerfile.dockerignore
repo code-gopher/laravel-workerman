@@ -1,0 +1,15 @@
+# 测试专用构建排除宿主机依赖和根 lock，确保 PHP 8.3 自行解析根开发依赖。
+vendor/
+**/vendor/
+composer.lock
+.git/
+
+# 不复制本地密钥、测试缓存或服务运行文件，避免宿主机状态污染验收镜像。
+.env
+**/.env
+**/.env.*
+.phpunit.result.cache
+runtime/
+**/storage/
+tests/laravel-fixture/bootstrap/cache/
+tests/laravel-fixture/fixtures/large.bin

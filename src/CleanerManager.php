@@ -43,11 +43,19 @@ class CleanerManager
         DatabaseCleaner::class,
     ];
 
-    public function __construct()
+    /**
+     * 在首个业务请求前记录应用级清理基线。
+     *
+     * @param mixed $app 可选框架容器
+     */
+    public function __construct($app = null)
     {
-        // 初始化内置清理器
         foreach (self::BUILTIN_CLEANERS as $class) {
-            $this->cleaners[] = new $class();
+            $cleaner = new $class();
+            if ($app !== null && $cleaner instanceof UrlGeneratorCleaner) {
+                $cleaner->captureBaseline($app);
+            }
+            $this->cleaners[] = $cleaner;
         }
     }
 
@@ -62,21 +70,20 @@ class CleanerManager
     {
         foreach ($cleaners as $class) {
             try {
-                if (!class_exists($class)) {
-                    Logger::warning("清理器类不存在: {$class}");
-                    continue;
+                if (!is_string($class) || !class_exists($class)) {
+                    throw new \InvalidArgumentException('清理器类不存在或类名无效');
                 }
 
                 $cleaner = new $class();
 
                 if (!($cleaner instanceof CleanerInterface)) {
-                    Logger::warning("清理器必须实现 CleanerInterface 接口: {$class}");
-                    continue;
+                    throw new \InvalidArgumentException('清理器必须实现 CleanerInterface 接口');
                 }
 
                 $this->cleaners[] = $cleaner;
             } catch (Throwable $e) {
-                Logger::error("加载清理器失败 [{$class}]: {$e->getMessage()}");
+                // 配置的隔离器缺失时启动必须失败，不能带着不完整的隔离链上线。
+                throw new \RuntimeException('加载清理器失败: ' . $e->getMessage(), 0, $e);
             }
         }
 
@@ -105,12 +112,18 @@ class CleanerManager
      */
     public function cleanup($app): void
     {
+        $failure = null;
         foreach ($this->cleaners as $cleaner) {
             try {
                 $cleaner->clean($app);
             } catch (Throwable $e) {
                 Logger::error('清理器执行失败: ' . $e->getMessage());
+                $failure = $failure ?? $e;
             }
+        }
+        if ($failure !== null) {
+            // 继续运行所有清理器后上报，由请求管理器淘汰不再可信的 Worker。
+            throw new \RuntimeException('请求隔离未完成', 0, $failure);
         }
     }
 }

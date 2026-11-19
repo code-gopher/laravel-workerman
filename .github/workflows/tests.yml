@@ -1,0 +1,79 @@
+name: test
+on:
+  push:
+  pull_request:
+jobs:
+  phpunit:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['7.2', '7.4', '8.0', '8.1', '8.2', '8.3']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+      - name: Install test dependencies
+        # 旧版框架仅用于兼容性测试，生产环境不应忽略安全公告。
+        env:
+          COMPOSER_NO_SECURITY_BLOCKING: 1
+        run: composer update --prefer-dist --no-interaction --no-progress
+      - name: Validate Composer metadata
+        run: composer validate --no-check-publish
+      - name: Lint PHP sources and tests
+        run: find src tests -type d \( -name vendor -o -name lumen-fixture -o -name laravel-fixture \) -prune -o -type f -name '*.php' -print0 | xargs -0 -n1 php -l
+      - name: Run unit tests
+        run: vendor/bin/phpunit -c phpunit.xml.dist
+
+  lumen-database-acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # 测试专用项目名隔离数据库和网络，避免旧脚本清表影响其他验收。
+    env:
+      COMPOSE_PROJECT_NAME: workerman-lumen-acceptance
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Lumen and MariaDB acceptance stack
+        run: docker compose -f tests/docker-compose.acceptance.yml build app
+      - name: Start acceptance stack
+        run: docker compose -f tests/docker-compose.acceptance.yml up -d --wait --wait-timeout 120 mariadb app
+      - name: Run real HTTP database and concurrency checks
+        run: docker compose -f tests/docker-compose.acceptance.yml exec -T app php acceptance.php
+      # 旧脚本会清表，新增探针必须在其结束后串行运行，不能后台并发。
+      - name: Run Lumen request isolation and sustained concurrency checks
+        run: docker compose -f tests/docker-compose.acceptance.yml exec -T app php /app/tests/acceptance/run.php
+      - name: Run Lumen HTTP protocol checks
+        run: docker compose -f tests/docker-compose.acceptance.yml exec -T app php /app/tests/acceptance/protocol.php
+      - name: Print container logs on failure
+        if: failure()
+        run: docker compose -f tests/docker-compose.acceptance.yml logs --no-color
+      - name: Stop acceptance stack
+        if: always()
+        run: docker compose -f tests/docker-compose.acceptance.yml down -v --remove-orphans
+
+  laravel-database-acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # 测试专用 Laravel 栈使用独立 MariaDB，不复用 Lumen job 的数据。
+    env:
+      COMPOSE_PROJECT_NAME: workerman-laravel-acceptance
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Laravel and MariaDB acceptance stack
+        run: docker compose -f tests/docker-compose.acceptance.yml build laravel
+      - name: Start Laravel acceptance stack
+        run: docker compose -f tests/docker-compose.acceptance.yml up -d --wait --wait-timeout 120 mariadb laravel
+      - name: Run Laravel request isolation and sustained concurrency checks
+        run: docker compose -f tests/docker-compose.acceptance.yml exec -T laravel php /app/tests/acceptance/run.php
+      - name: Run Laravel HTTP protocol checks
+        run: docker compose -f tests/docker-compose.acceptance.yml exec -T laravel php /app/tests/acceptance/protocol.php
+      - name: Run Laravel persistent session and flash lifecycle checks
+        run: docker compose -f tests/docker-compose.acceptance.yml exec -T laravel php /app/tests/acceptance/session.php
+      - name: Print container logs on failure
+        if: failure()
+        run: docker compose -f tests/docker-compose.acceptance.yml logs --no-color
+      - name: Stop Laravel acceptance stack
+        if: always()
+        run: docker compose -f tests/docker-compose.acceptance.yml down -v --remove-orphans

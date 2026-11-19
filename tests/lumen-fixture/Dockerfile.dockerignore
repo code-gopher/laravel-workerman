@@ -1,0 +1,7 @@
+vendor/
+**/vendor/
+.git/
+tests/laravel-fixture/storage/logs/*.log
+tests/laravel-fixture/storage/workerman/
+tests/lumen-fixture/vendor/
+tests/lumen-fixture/storage/

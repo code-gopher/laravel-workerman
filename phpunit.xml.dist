@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit bootstrap="vendor/autoload.php" colors="true">
+    <testsuites>
+        <testsuite name="Laravel Workerman">
+            <file>tests/WorkermanConfigTest.php</file>
+            <file>tests/LifecycleTest.php</file>
+            <file>tests/StaticResponseTest.php</file>
+            <file>tests/EnvironmentTest.php</file>
+        </testsuite>
+    </testsuites>
+</phpunit>

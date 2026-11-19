@@ -82,35 +82,123 @@ final class WorkermanConfig
         $this->debug = $this->resolveDebug($config, $cliOptions);
         $this->name = $this->resolveString($config, 'name', 'WORKERMAN_NAME', 'laravel-workerman');
 
-        // 静态文件配置
+        // 配置结构在进入运行期前验证，避免错误值静默转换为默认值或触发 TypeError。
         $staticConfig = $config['static'] ?? [];
-        $this->staticEnable = (bool) ($staticConfig['enable'] ?? true);
-        $this->staticPath = $staticConfig['path'] ?? $this->basePath . '/public';
-
-        // 日志配置
         $logConfig = $config['log'] ?? [];
-        $this->logFile = $logConfig['file'] ?? $this->runtimeDir . '/workerman.log';
+        if (!is_array($staticConfig) || !is_array($logConfig)) {
+            throw new \InvalidArgumentException('Workerman static 和 log 配置必须是数组');
+        }
 
-        // 自定义清理器配置
+        $staticEnabled = $staticConfig['enable'] ?? true;
+        if (!is_bool($staticEnabled)) {
+            throw new \InvalidArgumentException('Workerman static.enable 必须是布尔值');
+        }
+        $this->staticEnable = $staticEnabled;
+
+        $staticPath = $staticConfig['path'] ?? $this->basePath . '/public';
+        $logFile = $logConfig['file'] ?? $this->runtimeDir . '/workerman.log';
+        if (!is_string($staticPath) || $staticPath === '' || !is_string($logFile) || $logFile === '') {
+            throw new \InvalidArgumentException('Workerman 静态目录和日志路径必须是非空字符串');
+        }
+        $this->staticPath = $staticPath;
+        $this->logFile = $logFile;
+
         $this->cleaners = $config['cleaners'] ?? [];
-
-        // 定时任务配置
         $this->tasks = $config['tasks'] ?? [];
+        if (!is_array($this->cleaners) || !is_array($this->tasks)) {
+            throw new \InvalidArgumentException('Workerman cleaners 和 tasks 配置必须是数组');
+        }
 
         return $this;
     }
 
     /**
-     * 加载配置文件
+     * 读取 Laravel 与 Dotenv 使用的环境值，兼容不调用 putenv 的不可变加载器。
+     *
+     * @param string $name 环境变量名
+     *
+     * @return mixed 环境值；未定义时返回 null
+     */
+    public static function getEnvironmentValue(string $name)
+    {
+        if (class_exists('Illuminate\\Support\\Env')) {
+            return \Illuminate\Support\Env::get($name);
+        }
+
+        // 独立使用时也遵循 Dotenv 的读取顺序，不能仅依赖进程环境。
+        $value = $_SERVER[$name] ?? $_ENV[$name] ?? getenv($name);
+
+        return $value === false ? null : $value;
+    }
+
+    /**
+     * 解析 Laravel 默认或 APP_CONFIG_CACHE 指定的配置缓存路径。
+     *
+     * @return string 配置缓存的绝对路径
+     * @throws \InvalidArgumentException 缓存路径不是非空字符串时抛出
+     */
+    public function getCachedConfigPath(): string
+    {
+        $path = self::getEnvironmentValue('APP_CONFIG_CACHE');
+        if ($path === null) {
+            return $this->basePath . '/bootstrap/cache/config.php';
+        }
+
+        if (!is_string($path) || $path === '') {
+            throw new \InvalidArgumentException('APP_CONFIG_CACHE 必须是非空字符串');
+        }
+
+        // 同时识别 Unix、UNC 和 Windows 盘符，避免在跨平台启动脚本中重复拼接根目录。
+        if ($path[0] === '/' || $path[0] === '\\'
+            || (preg_match('/^[A-Za-z]:/', $path) && (substr($path, 2, 1) === '/' || substr($path, 2, 1) === '\\'))
+        ) {
+            return $path;
+        }
+
+        return $this->basePath . '/' . $path;
+    }
+
+    /**
+     * 优先读取 Laravel 配置缓存，避免重新执行配置文件造成监听参数与 Worker 不一致。
      *
      * @return array<string, mixed>
+     * @throws \InvalidArgumentException 缓存结构或 Workerman 配置不是数组时抛出
      */
     private function loadConfigFile(): array
     {
+        $cachedConfigFile = $this->getCachedConfigPath();
+        if (is_file($cachedConfigFile)) {
+            $cachedConfig = require $cachedConfigFile;
+            if (!is_array($cachedConfig)) {
+                throw new \InvalidArgumentException('Laravel 配置缓存必须是数组');
+            }
+
+            // 缓存中缺少 workerman 时也不回退到源配置，与 Laravel 缓存模式保持一致。
+            $config = $cachedConfig['workerman'] ?? [];
+            if (!is_array($config)) {
+                throw new \InvalidArgumentException('缓存中的 Workerman 配置必须是数组');
+            }
+
+            return $config;
+        }
+
         $configFile = $this->basePath . '/config/workerman.php';
 
         if (file_exists($configFile)) {
             return require $configFile;
+        }
+
+        if (function_exists('config') && function_exists('app')) {
+            $application = app();
+            if (is_object($application)
+                && method_exists($application, 'bound')
+                && $application->bound('config')
+            ) {
+                $frameworkConfig = config('workerman', []);
+                if (is_array($frameworkConfig)) {
+                    return $frameworkConfig;
+                }
+            }
         }
 
         return [];
@@ -128,7 +216,16 @@ final class WorkermanConfig
      */
     private function resolveString(array $config, string $key, string $envKey, string $default): string
     {
-        return (string) ($config[$key] ?? getenv($envKey) ?: $default);
+        $value = $config[$key] ?? self::getEnvironmentValue($envKey);
+        if ($value === false || $value === null || $value === '') {
+            $value = $default;
+        }
+
+        if (!is_scalar($value)) {
+            throw new \InvalidArgumentException("Workerman {$key} 配置必须是标量");
+        }
+
+        return (string) $value;
     }
 
     /**
@@ -141,8 +238,17 @@ final class WorkermanConfig
      */
     private function resolvePort(array $config, array $cliOptions): int
     {
-        $port = $cliOptions['p'] ?? $cliOptions['port'] ?? $config['port'] ?? getenv('WORKERMAN_PORT') ?: 8080;
-        return (int) $port;
+        $port = $this->resolveIntegerOption(
+            $cliOptions['p'] ?? $cliOptions['port'] ?? $config['port'] ?? self::getEnvironmentValue('WORKERMAN_PORT'),
+            8080,
+            'port'
+        );
+
+        if ($port < 1 || $port > 65535) {
+            throw new \InvalidArgumentException('Workerman port 必须在 1 到 65535 之间');
+        }
+
+        return $port;
     }
 
     /**
@@ -155,14 +261,21 @@ final class WorkermanConfig
      */
     private function resolveWorkerCount(array $config, array $cliOptions): int
     {
-        $workers = $cliOptions['w'] ?? $cliOptions['workers'] ?? $config['workers'] ?? getenv('WORKERMAN_WORKERS') ?: 4;
+        $workers = $this->resolveIntegerOption(
+            $cliOptions['w'] ?? $cliOptions['workers'] ?? $config['workers'] ?? self::getEnvironmentValue('WORKERMAN_WORKERS'),
+            4,
+            'workers'
+        );
+        if ($workers < 1) {
+            throw new \InvalidArgumentException('Workerman workers 必须大于 0');
+        }
 
         // Windows 系统只能使用单进程
         if (PHP_OS_FAMILY === 'Windows') {
             return 1;
         }
 
-        return (int) $workers;
+        return $workers;
     }
 
     /**
@@ -175,8 +288,17 @@ final class WorkermanConfig
      */
     private function resolveMaxRequests(array $config, array $cliOptions): int
     {
-        $maxRequests = $cliOptions['m'] ?? $cliOptions['max'] ?? $config['max_requests'] ?? getenv('WORKERMAN_MAX_REQUESTS') ?: 10000;
-        return (int) $maxRequests;
+        $maxRequests = $this->resolveIntegerOption(
+            $cliOptions['m'] ?? $cliOptions['max'] ?? $config['max_requests'] ?? self::getEnvironmentValue('WORKERMAN_MAX_REQUESTS'),
+            10000,
+            'max_requests'
+        );
+        // 0 表示禁用自动轮换，与 Workerman 的 max_request 约定一致。
+        if ($maxRequests < 0) {
+            throw new \InvalidArgumentException('Workerman max_requests 不能小于 0');
+        }
+
+        return $maxRequests;
     }
 
     /**
@@ -189,9 +311,55 @@ final class WorkermanConfig
      */
     private function resolveDebug(array $config, array $cliOptions): bool
     {
-        return isset($cliOptions['debug'])
-            || ($config['debug'] ?? false)
-            || getenv('WORKERMAN_DEBUG');
+        if (isset($cliOptions['debug'])) {
+            return true;
+        }
+
+        $value = $config['debug'] ?? self::getEnvironmentValue('WORKERMAN_DEBUG');
+        if ($value === false || $value === null || $value === '') {
+            return false;
+        }
+
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if (!is_scalar($value)) {
+            throw new \InvalidArgumentException('Workerman debug 配置必须是布尔值');
+        }
+
+        $parsed = filter_var($value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+        if ($parsed === null) {
+            throw new \InvalidArgumentException('Workerman debug 只接受 true/false、1/0、yes/no、on/off');
+        }
+
+        return $parsed;
+    }
+
+    /**
+     * 将配置值解析为整数并拒绝非整数输入。
+     *
+     * @param mixed  $value 配置值
+     * @param int    $default 默认值
+     * @param string $name 配置项名称
+     *
+     * @return int
+     */
+    private function resolveIntegerOption($value, int $default, string $name): int
+    {
+        if ($value === false || $value === null || $value === '') {
+            return $default;
+        }
+
+        if (is_int($value)) {
+            return $value;
+        }
+
+        if (!is_string($value) || !preg_match('/^-?\\d+$/', $value)) {
+            throw new \InvalidArgumentException("Workerman {$name} 必须是整数");
+        }
+
+        return (int) $value;
     }
 
     // =========================================================================

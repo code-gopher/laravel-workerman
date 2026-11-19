@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace CodeGopher\LaravelWorkerman\Adapters;
 
-use Throwable;
 use Illuminate\Http\Request;
 use Laravel\Lumen\Application;
 use Symfony\Component\HttpFoundation\Response;
@@ -46,13 +45,8 @@ final class LumenAdapter implements FrameworkAdapter
     {
         $this->instance('request', $mockRequest);
 
-        // Lumen 没有 Kernel，直接通过 handle 引导
-        try {
-            $response = $this->app->handle($mockRequest);
-            $this->terminate($mockRequest, $response);
-        } catch (Throwable $e) {
-            // 引导阶段的异常被忽略
-        }
+        // Lumen 没有 HTTP Kernel；boot() 足以引导提供者，无需执行虚构根请求。
+        $this->app->boot();
     }
 
     /**
@@ -103,8 +97,8 @@ final class LumenAdapter implements FrameworkAdapter
      */
     public function resolved(string $abstract): bool
     {
-        // Lumen 使用 bound 替代 resolved
-        return $this->app->bound($abstract);
+        // Lumen 继承容器的 resolved()，不能把尚未实例化的绑定当作已解析对象。
+        return $this->app->resolved($abstract);
     }
 
     /**

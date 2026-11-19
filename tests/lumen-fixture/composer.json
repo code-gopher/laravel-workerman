@@ -1,0 +1,33 @@
+{
+  "name": "code-gopher/laravel-workerman-lumen-acceptance",
+  "type": "project",
+  "require": {
+    "php": "^8.2",
+    "ext-json": "*",
+    "ext-pdo": "*",
+    "ext-pdo_mysql": "*",
+    "ext-curl": "*",
+    "code-gopher/laravel-workerman": "dev-main",
+    "laravel/lumen-framework": "^10.0"
+  },
+  "repositories": [
+    {
+      "type": "path",
+      "url": "../..",
+      "options": {
+        "symlink": true,
+        "versions": {
+          "code-gopher/laravel-workerman": "dev-main"
+        }
+      }
+    }
+  ],
+  "config": {
+    "sort-packages": true,
+    "allow-plugins": {
+      "php-http/discovery": false
+    }
+  },
+  "minimum-stability": "dev",
+  "prefer-stable": true
+}

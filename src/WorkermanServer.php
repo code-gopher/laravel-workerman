@@ -30,6 +30,12 @@ final class WorkermanServer
     /** @var AppManager|null 应用管理器 (每个 Worker 进程独立，支持 Laravel/Lumen) */
     private $appManager = null;
 
+    /** @var bool 当前 Worker 应用初始化失败，不接受动态请求 */
+    private $initializationFailed = false;
+
+    /** @var bool 当前 HTTP Worker 是否正在排空已有响应 */
+    private $draining = false;
+
     /** @var float 服务器启动时间 */
     private $serverStartTime;
 
@@ -60,6 +66,7 @@ final class WorkermanServer
         $this->setupEnvironment();
         $this->createWorker();
         $this->registerCallbacks();
+        $this->createTaskWorker();
 
         Worker::runAll();
     }
@@ -110,7 +117,14 @@ final class WorkermanServer
             $this->onWorkerStart($worker);
         };
         $this->worker->onMessage     = function (TcpConnection $conn, Request $req) {
-            $this->onMessage($conn, $req);
+            try {
+                $this->onMessage($conn, $req);
+            } catch (Throwable $exception) {
+                // 请求级解析或发送错误不能逃逸到 Workerman 并杀死整个 Worker。
+                Logger::error('HTTP 请求处理失败: ' . $exception->getMessage());
+                $this->sendResponse($conn, $req, new Response(500, ['Connection' => 'close'], 'Internal Server Error'));
+                $conn->close();
+            }
         };
         $this->worker->onWorkerStop  = function (Worker $worker) {
             $this->onWorkerStop($worker);
@@ -128,6 +142,8 @@ final class WorkermanServer
      */
     private function onWorkerStart(Worker $worker): void
     {
+        $this->appManager = null;
+        $this->initializationFailed = false;
         $this->appManager = new AppManager(
             $this->config->getBasePath(),
             $this->config->getMaxRequests(),
@@ -136,6 +152,7 @@ final class WorkermanServer
             $this->config->getCleaners()
         );
 
+        // 清理 opcode/APCu 失败不应阻止应用启动，部分环境未加载扩展也应正常工作。
         try {
             if (function_exists('opcache_reset')) {
                 opcache_reset();
@@ -143,16 +160,14 @@ final class WorkermanServer
             if (function_exists('apc_clear_cache')) {
                 apc_clear_cache();
             }
+        } catch (Throwable $e) {
+            Logger::warning('启动缓存清理失败: ' . $e->getMessage());
+        }
 
+        try {
             $startTime = microtime(true);
 
             $this->appManager->initialize();
-
-            if ($worker->id === 0 && count($this->config->getTasks()) > 0) {
-                $taskManager = new TaskManager();
-                $taskManager->loadTasks($this->config->getTasks());
-                $taskManager->register();
-            }
 
             $initTime   = round((microtime(true) - $startTime) * 1000, 2);
             $memoryUsed = round(memory_get_usage(true) / 1024 / 1024, 2);
@@ -181,16 +196,38 @@ final class WorkermanServer
     private function onMessage(TcpConnection $connection, Request $request): void
     {
         $path = parse_url($request->uri(), PHP_URL_PATH);
+        if (!is_string($path)) {
+            $this->sendResponse($connection, $request, new Response(400, ['Connection' => 'close'], 'Bad Request'));
+            $connection->close();
+            return;
+        }
 
-        // 健康检查端点（优先处理，不经过 Laravel）
+        // 健康端点始终可探测，即使应用初始化失败也通过 503 反映不可用状态。
+        if ($path === self::HEALTH_CHECK_PATH && ($this->initializationFailed || $this->appManager === null)) {
+            $this->sendResponse($connection, $request, new Response(503, ['Content-Type' => 'text/plain; charset=utf-8'], 'Service Unavailable'));
+            return;
+        }
+
+        // 初始化失败后保留进程并持续返回 503，避免 master 自动重启造成快速循环。
+        if ($this->initializationFailed || $this->appManager === null) {
+            $this->sendResponse($connection, $request, new Response(503, ['Content-Type' => 'text/plain; charset=utf-8'], 'Service Unavailable'));
+            return;
+        }
+
+        if ($this->draining) {
+            $this->sendResponse($connection, $request, new Response(503, ['Content-Type' => 'text/plain; charset=utf-8', 'Connection' => 'close'], 'Worker is draining'));
+            return;
+        }
+
+        // 排空中的 Worker 不再宣告健康，便于负载均衡器停止转发。
         if ($path === self::HEALTH_CHECK_PATH) {
-            $connection->send($this->handleHealthCheck());
+            $this->sendResponse($connection, $request, $this->handleHealthCheck());
             return;
         }
 
         // 状态端点（仅调试模式可用）
         if ($path === self::STATUS_PATH && $this->config->isDebug()) {
-            $connection->send($this->handleStatus());
+            $this->sendResponse($connection, $request, $this->handleStatus());
             return;
         }
 
@@ -198,14 +235,121 @@ final class WorkermanServer
         if ($this->config->isStaticEnabled()) {
             $staticResponse = StaticFileHandler::handle($request, $this->config->getStaticPath());
             if ($staticResponse !== null) {
-                $connection->send($staticResponse);
+                $this->sendResponse($connection, $request, $staticResponse);
                 return;
             }
         }
 
         // 应用处理动态请求 (Laravel/Lumen)
         $response = $this->appManager->handleRequest($request);
+        $this->sendResponse($connection, $request, $response);
+
+        if ($this->appManager->shouldStopAfterResponse()) {
+            $this->beginDrain();
+        }
+    }
+
+    /**
+     * 统一响应出口，确保内置端点与异常路径也遵守 HEAD 语义。
+     *
+     * @param TcpConnection $connection 当前连接
+     * @param Request $request 当前请求
+     * @param Response $response 待发送响应
+     * @return void
+     */
+    private function sendResponse(TcpConnection $connection, Request $request, Response $response): void
+    {
+        if (strtoupper($request->method()) === 'HEAD' && !($response instanceof HeadResponse)) {
+            $headers = $response->getHeaders();
+            if (!in_array($response->getStatusCode(), [204, 304], true)) {
+                $hasLength = false;
+                foreach ($headers as $name => $value) {
+                    $hasLength = $hasLength || strcasecmp((string) $name, 'Content-Length') === 0;
+                }
+                if (!$hasLength) {
+                    $headers['Content-Length'] = (string) strlen($response->rawBody());
+                }
+            }
+            $response = new HeadResponse($response->getStatusCode(), $headers);
+        }
+        // 文件发送由 Workerman 分块续写；暂停解析同连接后续请求，防止 HTTP pipeline 响应插入文件正文。
+        $sendingFile = isset($response->file);
+        if ($sendingFile) {
+            $connection->pauseRecv();
+        }
         $connection->send($response);
+        if ($sendingFile) {
+            $timer = null;
+            $timer = Timer::add(0.01, function () use ($connection, &$timer): void {
+                if ($connection->getStatus() === TcpConnection::STATUS_CLOSED) {
+                    Timer::del($timer);
+                    return;
+                }
+                if ($connection->onBufferDrain === null && $connection->bufferIsEmpty()) {
+                    Timer::del($timer);
+                    $connection->resumeRecv();
+                }
+            });
+        }
+    }
+
+    /**
+     * 停止接入新连接，等待整个 Worker 的缓冲区和文件发送器结束。
+     *
+     * @return void
+     */
+    private function beginDrain(): void
+    {
+        if ($this->draining || $this->worker === null) {
+            return;
+        }
+        $this->draining = true;
+        $this->worker->pauseAccept();
+        $deadline = microtime(true) + 30;
+        // 不侵入文件 onBufferDrain 链；关闭连接会自然从 connections 移除，避免断连丢通知。
+        $timer = null;
+        $timer = Timer::add(0.01, function () use (&$timer, $deadline): void {
+            $pending = false;
+            foreach ($this->worker->connections as $connection) {
+                if (!$connection->bufferIsEmpty() || $connection->onBufferDrain !== null) {
+                    $pending = true;
+                    break;
+                }
+            }
+            if (!$pending || microtime(true) >= $deadline) {
+                Timer::del($timer);
+                if ($pending) {
+                    Logger::warning('Worker 排空超过 30 秒，将关闭剩余连接');
+                }
+                $this->appManager->stopAfterResponseSent();
+            }
+        });
+    }
+
+    /**
+     * 将调度器隔离到独立进程，避免 HTTP 轮换重置定时器或耗时任务阻塞请求。
+     *
+     * @return void
+     */
+    private function createTaskWorker(): void
+    {
+        if ($this->config->getTasks() === []) {
+            return;
+        }
+        if (PHP_OS_FAMILY === 'Windows') {
+            throw new \RuntimeException('定时任务独立进程需要 Linux/macOS，请在 Linux Docker 中运行');
+        }
+        $taskWorker = new Worker();
+        $taskWorker->name = $this->config->getName() . '-tasks';
+        $taskWorker->count = 1;
+        $taskWorker->onWorkerStart = function (): void {
+            // 任务进程也需要完成框架引导，但不绑定 HTTP 请求轮换。
+            $manager = new AppManager($this->config->getBasePath(), 0, $this->config->getPort(), $this->config->isDebug(), $this->config->getCleaners());
+            $manager->initialize();
+            $tasks = new TaskManager();
+            $tasks->loadTasks($this->config->getTasks());
+            $tasks->register();
+        };
     }
 
     /**
@@ -336,13 +480,15 @@ final class WorkermanServer
      */
     private function handleInitializationError(Throwable $e): void
     {
+        $this->initializationFailed = true;
+        $this->appManager = null;
         Logger::error("初始化失败: {$e->getMessage()}");
 
         if ($this->config->isDebug()) {
             Logger::error($e->getTraceAsString());
         }
 
-        Worker::stopAll();
+        // 保留失败进程提供 503，不绕过 Workerman 原生退避形成高速重启循环。
     }
 
     /**

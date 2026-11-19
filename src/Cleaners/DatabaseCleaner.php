@@ -27,16 +27,22 @@ class DatabaseCleaner implements CleanerInterface
                 if (method_exists($connection, 'transactionLevel') && $connection->transactionLevel() > 0) {
                     Logger::warning('检测到未提交的事务，正在回滚...');
                     try {
-                        while ($connection->transactionLevel() > 0) {
-                            $connection->rollBack();
+                        // 直接回滚最外层，避免已丢失的嵌套保存点阻断整笔事务清理。
+                        $connection->rollBack(0);
+                        if ($connection->transactionLevel() !== 0) {
+                            throw new \RuntimeException('事务层级未能归零');
                         }
                     } catch (Throwable $e) {
                         Logger::error('事务回滚失败: ' . $e->getMessage());
+                        // 失败连接不得被下一请求复用；重新建立连接也会回收服务端事务。
+                        $connection->disconnect();
+                        throw $e;
                     }
                 }
             }
         } catch (Throwable $e) {
-            // 忽略
+            Logger::error('数据库请求状态清理失败: ' . $e->getMessage());
+            throw $e;
         }
     }
 }

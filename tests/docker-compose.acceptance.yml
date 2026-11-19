@@ -1,0 +1,75 @@
+services:
+  mariadb:
+    image: mariadb:11.4
+    environment:
+      MARIADB_DATABASE: workerman_test
+      MARIADB_USER: workerman
+      MARIADB_PASSWORD: workerman_test
+      MARIADB_ROOT_PASSWORD: root_test_only
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - ./lumen-fixture/database/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    networks: [acceptance]
+
+  app:
+    build:
+      context: ..
+      dockerfile: tests/lumen-fixture/Dockerfile
+    working_dir: /app/tests/lumen-fixture
+    environment:
+      DB_HOST: mariadb
+      DB_PORT: 3306
+      DB_DATABASE: workerman_test
+      DB_USERNAME: workerman
+      DB_PASSWORD: workerman_test
+      WORKERMAN_HOST: 0.0.0.0
+      WORKERMAN_PORT: 18767
+      WORKERMAN_WORKERS: 4
+      # 测试专用探针与旧验收共用此进程，关闭调试以覆盖真实清理流程。
+      WORKERMAN_DEBUG: "false"
+      ACCEPTANCE_FRAMEWORK: lumen
+      ACCEPTANCE_BASE_URL: http://127.0.0.1:18767
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:18767:18767"
+    # 测试专用入口使用独立 PID 目录，不复用已有服务的运行文件。
+    command: ["sh", "-lc", "git config --global --add safe.directory /app && composer install --no-interaction --prefer-dist && mkdir -p storage /tmp/workerman-acceptance-18767 && exec php /app/tests/acceptance/server.php start"]
+    networks: [acceptance]
+
+  # 测试专用 Laravel 服务独立解析根开发依赖，不使用 Lumen 的 vendor。
+  laravel:
+    build:
+      context: ..
+      dockerfile: tests/laravel-fixture/Dockerfile
+    working_dir: /app
+    environment:
+      DB_HOST: mariadb
+      DB_PORT: 3306
+      DB_DATABASE: workerman_test
+      DB_USERNAME: workerman
+      DB_PASSWORD: workerman_test
+      WORKERMAN_WORKERS: 4
+      WORKERMAN_DEBUG: "false"
+      ACCEPTANCE_FRAMEWORK: laravel
+      ACCEPTANCE_PORT: 18768
+      ACCEPTANCE_BASE_URL: http://127.0.0.1:18768
+      ACCEPTANCE_SESSION_DRIVER: file
+      # 测试专用会话目录位于容器原生文件系统，避免主机挂载影响文件会话。
+      ACCEPTANCE_SESSION_PATH: /tmp/workerman-acceptance-sessions
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:18768:18768"
+    command: ["sh", "-lc", "mkdir -p tests/laravel-fixture/bootstrap/cache tests/laravel-fixture/storage/framework/views tests/laravel-fixture/storage/logs /tmp/workerman-acceptance-18768 \"$$ACCEPTANCE_SESSION_PATH\" && exec php tests/acceptance/server.php start"]
+    networks: [acceptance]
+
+networks:
+  acceptance:
+    driver: bridge

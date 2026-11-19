@@ -1,0 +1,5 @@
+# GitHub 源码归档与 Composer dist 仅分发运行代码及使用说明。
+/.gitattributes export-ignore
+/.gitignore export-ignore
+/vendor export-ignore
+/composer.lock export-ignore

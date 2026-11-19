@@ -49,9 +49,8 @@ final class LaravelAdapter implements FrameworkAdapter
     {
         $this->instance('request', $mockRequest);
 
-        // 通过 Kernel 引导应用
-        $response = $this->kernel->handle($mockRequest);
-        $this->kernel->terminate($mockRequest, $response);
+        // 只引导服务提供者，不伪造访问根路由，避免 Worker 重启触发业务副作用。
+        $this->kernel->bootstrap();
     }
 
     /**
