@@ -3,6 +3,7 @@
 # ========================================
 /vendor/
 composer.lock
+!tests/lumen-fixture/composer.lock
 
 # ========================================
 # IDE 和编辑器
